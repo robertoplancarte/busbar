@@ -1,0 +1,2 @@
+sourcedId,status,dateLastModified,title,grades,courseSourcedId,classCode,classType,location,schoolSourcedId,termSourcedIds,subjects,subjectCodes,periods
+k1,,,Math 3 - Room 12,03,c1,MATH3-12,scheduled,Room 12,s1,t1,Mathematics,,"1,2"

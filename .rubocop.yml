@@ -1,0 +1,9 @@
+# Omakase Ruby styling for Rails
+inherit_gem: { rubocop-rails-omakase: rubocop.yml }
+
+AllCops:
+  Exclude:
+    - "extensions/**/*"   # each extension gem keeps its own style and tooling
+    - "spec/dummy/db/schema.rb"
+    - "vendor/**/*"
+    - "tmp/**/*"

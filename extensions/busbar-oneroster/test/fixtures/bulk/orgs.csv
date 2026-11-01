@@ -1,0 +1,3 @@
+sourcedId,status,dateLastModified,name,type,identifier,parentSourcedId
+d1,,,Springfield District,district,SD-1,
+s1,,,Springfield Elementary,school,SE-1,d1
