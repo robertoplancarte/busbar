@@ -1,0 +1,4 @@
+sourcedId,status,dateLastModified,enabledUser,username,userIds,givenName,familyName,middleName,identifier,email,sms,phone,agentSourcedIds,grades,password,userMasterIdentifier,preferredGivenName,preferredMiddleName,preferredFamilyName,primaryOrgSourcedId,pronouns
+u1,,,true,ekrabappel,"{LDAP:ek1},{Fed:ek-9}",Edna,Krabappel,,T-100,edna@example.edu,,,,,,,,,,s1,she/her
+u2,,,true,bsimpson,,Bart,Simpson,Jojo,S-200,bart@example.edu,,,u3,03,,,,,,s1,
+u3,,,true,hsimpson,,Homer,Simpson,Jay,P-300,homer@example.com,,,,,,,,,,s1,

@@ -1,0 +1,4 @@
+sourcedId,status,dateLastModified,userSourcedId,roleType,role,beginDate,endDate,orgSourcedId,userProfileSourcedId
+r1,,,u1,primary,teacher,2025-08-15,,s1,
+r2,,,u2,primary,student,2025-08-15,,s1,
+r3,,,u3,primary,parent,,,s1,
