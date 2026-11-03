@@ -1,0 +1,20 @@
+<section class="busbar busbar-new-run">
+  <h1>New import</h1>
+  <%= form_with url: runs_path, multipart: true, class: "busbar-form" do |f| %>
+    <% if @templates.any? %>
+      <p>
+        <%= f.label :template_id, "Use a saved mapping" %>
+        <%= f.select :template_id, @templates.map { |t| [ "#{t.name} (v#{t.version})", t.id ] }, include_blank: "None, map columns after upload" %>
+      </p>
+    <% end %>
+    <p>
+      <%= f.label :schema, "Records" %>
+      <%= f.select :schema, Busbar.schemas.map { |key, schema| [ schema.name, key ] } %>
+    </p>
+    <p>
+      <%= f.label :file, "File (CSV, TSV, XLSX, JSON or NDJSON)" %>
+      <%= f.file_field :file, required: true, accept: ".csv,.tsv,.txt,.xlsx,.json,.ndjson,.jsonl" %>
+    </p>
+    <%= f.submit "Upload", class: "busbar-button" %>
+  <% end %>
+</section>

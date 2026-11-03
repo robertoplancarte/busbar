@@ -7,6 +7,7 @@ gem "puma"
 gem "propshaft"
 
 group :development, :test do
+  gem "bcrypt", "~> 3.1.7" # the dummy app's User uses has_secure_password, like locke
   gem "rspec-rails", "~> 8.0"
   gem "debug", ">= 1.0.0"
 end

@@ -1,0 +1,47 @@
+<section class="busbar busbar-run" id="<%= dom_id(@run) %>">
+  <header class="busbar-header">
+    <h1><%= @run.filename %></h1>
+    <span class="busbar-state busbar-state--<%= @run.state %>"><%= @run.state.humanize %></span>
+  </header>
+
+  <% if @run.in_state?(:awaiting_mapping) %>
+    <p><%= link_to "Map columns", run_mapping_path(@run), class: "busbar-button" %></p>
+  <% elsif @run.in_state?(:ready) %>
+    <p><%= link_to "Review and approve", run_review_path(@run), class: "busbar-button" %></p>
+  <% elsif !@run.finished? %>
+    <p class="busbar-progress">Working: <%= @run.chunks_done %> of <%= @run.chunk_count %> chunks. Refresh to update.</p>
+  <% end %>
+
+  <dl class="busbar-summary">
+    <dt>Records</dt><dd><%= @run.schema.name %></dd>
+    <dt>Rows</dt><dd><%= @run.row_count %></dd>
+    <dt>Load mode</dt><dd><%= @run.load_mode.humanize %></dd>
+    <% @run.counts.each do |name, count| %>
+      <dt><%= name.humanize %></dt><dd><%= count %></dd>
+    <% end %>
+    <% if @run.after_ingestion_state %>
+      <dt>After import</dt><dd><%= @run.after_ingestion_state.humanize %></dd>
+    <% end %>
+  </dl>
+
+  <% if @run.error.present? %><p class="busbar-error"><%= @run.error %></p><% end %>
+
+  <p>
+    <% if @run.file.attached? %><%= link_to "Download original file", main_app.rails_blob_path(@run.file, disposition: "attachment") %><% end %>
+    <% if @run.error_file.attached? %> · <%= link_to "Download errors (CSV)", main_app.rails_blob_path(@run.error_file, disposition: "attachment") %><% end %>
+  </p>
+
+  <% if @run.can_transition_to?(:cancelled) %>
+    <%= button_to "Cancel import", cancel_run_path(@run), class: "busbar-button busbar-button--secondary" %>
+  <% end %>
+  <% if @run.finished? && @run.state.start_with?("completed") %>
+    <%= button_to "Run after-import steps again", rerun_after_ingestion_run_path(@run), class: "busbar-button busbar-button--secondary" %>
+  <% end %>
+
+  <h2>History</h2>
+  <ol class="busbar-history">
+    <% @run.transitions.order(:sort_key).each do |t| %>
+      <li><%= t.to_state.humanize %> · <%= l(t.created_at, format: :long) %></li>
+    <% end %>
+  </ol>
+</section>

@@ -1,6 +1,6 @@
 # BusBar engine spec
 
-> Committed copy of the [BusBar engine spec](https://claude.ai/artifact/BRkcGV6cECNVAsTUVMWMDn) as of 1 Nov 2026. The live doc is the source of truth; update this file when it changes.
+> Committed copy of the [BusBar engine spec](https://claude.ai/artifact/BRkcGV6cECNVAsTUVMWMDn) as of 1 Nov 2026, with the phase 1 decisions made while fitting BusBar to locke (3 Nov 2026, see [Phase 1 as built](#phase-1-as-built-locke-as-first-host)). The live doc is the source of truth; update this file when it changes.
 
 BusBar is a mountable Rails engine that loads client CSV and Excel files of any record type into a host app, from in-app uploads or SFTP, once or on a recurring feed. It builds on the decisions in [State of the art in B2B client data onboarding](https://claude.ai/artifact/TS3HRViiZ35ijPWJSU4Yaq).
 
@@ -59,7 +59,7 @@ One-time uploads always stop at Ready for review; recurring feeds load straight 
 
 ## Data model
 
-Eight engine tables, all prefixed `busbar_`, all carrying `tenant_id` except where noted. JSON columns are `jsonb` on Postgres, which version 1 requires because of `COPY`, `jsonb` and partial indexes.
+Eight engine tables, all prefixed `busbar_`, all carrying `tenant_id` except where noted. Engine tables always name this column `tenant_id`, whatever the host calls its own tenant column (`Busbar.config.tenant_column`); the install generator points its foreign key at the host's tenant table. JSON columns are `jsonb` on Postgres, which version 1 requires because of `COPY`, `jsonb` and partial indexes.
 
 | Table | Key columns | Notes |
 |---|---|---|
@@ -68,11 +68,11 @@ Eight engine tables, all prefixed `busbar_`, all carrying `tenant_id` except whe
 | `busbar_feeds` | `template_id`, `channel`, `connection_id`, `path`, `filename_pattern`, `schedule` (cron), `expected_by`, `pgp_mode`, `max_row_drop_pct`, `notify_emails`, `active` | A recurring source. One-time uploads have no feed |
 | `busbar_connections` | `kind` (`hosted_sftp`, `remote_sftp`, remote_bucket, email, push), `host`, `port`, `username`, `encrypted_credentials`, `host_key_fingerprint`, `provider_ref` | Credentials use Active Record encryption |
 | `busbar_runs` | `feed_id`, `template_id`, `template_version`, `state`, `source_path`, `checksum`, `row_count`, `chunk_count`, `chunks_done`, counts (`created`, `updated`, `unchanged`, `skipped`, `failed`), `dry_run`, `started_at`, `finished_at`, `error` | Raw file and error file attached via ActiveStorage. Unique on (`feed_id`, `checksum`) |
-| `busbar_staged_rows` | `run_id`, `row_number`, `raw` (jsonb), `data` (jsonb), `natural_key_digest`, `status`, `errors` (jsonb), `action` (`create`, `update`, `unchanged`, `skip`) | Bulk-written. Partitioned by `run_id` range or dropped after retention period |
+| `busbar_staged_rows` | `run_id`, `chunk`, `row_number`, `raw` (jsonb), `data` (jsonb), `natural_key` (jsonb), `natural_key_digest`, `status`, `row_errors` (jsonb), `action` (`create`, `update`, `unchanged`, `skip`), `record_id`, `handled_at` | Bulk-written. Partitioned by `run_id` range or dropped after retention period |
 | `busbar_seen_files` | `feed_id`, `path`, `size`, `mtime`, `checksum` | Remembers files pulled from client servers we cannot move or delete |
 | `busbar_value_maps` | `template_id`, `field`, `source_value`, `target_value`, `confirmed_by_id` | Learned enum mappings, reused by AI and humans |
 
-Row errors live inside `busbar_staged_rows.errors` rather than their own table, which keeps the write path to a single bulk insert per chunk. A ninth table, `busbar_run_transitions`, holds Statesman's state history for runs (see Run lifecycle).
+Row errors live inside `busbar_staged_rows.row_errors` (not `errors`, which would shadow Active Record's `errors`) rather than their own table, which keeps the write path to a single bulk insert per chunk. A ninth table, `busbar_run_transitions`, holds Statesman's state history for runs (see Run lifecycle).
 
 ## Schemas, templates and the step library
 
@@ -146,7 +146,7 @@ Each run moves through ActiveJob jobs that are idempotent per run and per chunk,
 | `Busbar::StageJob` | Stream the file in chunks of 5,000 rows (`smarter_csv`), apply the column map, bulk-write `raw` and `data` into `busbar_staged_rows` with `COPY` | 1 per run, streaming |
 | `Busbar::ValidateChunkJob` | Transforms and field and row validators in Ruby, written back with one `UPDATE ... FROM (VALUES ...)` per chunk | 1 per chunk, parallel |
 | `Busbar::FileChecksJob` | Set-based SQL over staged rows: duplicate natural keys in the file, references to existing records, row-count drift against the last run | 1 per run, after all chunks |
-| `Busbar::DiffJob` | Join staged rows against the target table on natural key to label each row create, update or unchanged | 1 per run |
+| `Busbar::DiffJob` | Look up existing records through the loader (the host model's `where(key => values)`) in batches of 1,000 to label each row create, update, unchanged or skip | 1 per run |
 | `Busbar::LoadChunkJob` | Upsert valid rows through the loader in batches of 1,000 | 1 per chunk |
 | `Busbar::FinalizeJob` | Totals, error CSV streamed from staged rows to ActiveStorage, notifications, file archiving | 1 per run |
 
@@ -166,8 +166,8 @@ class EmployeeLoader < Busbar::Loader
   # context: tenant, run, load_mode
   def load(rows, context)
     Employee.upsert_all(
-      rows.map { |r| r.merge(account_id: context.tenant.id) },
-      unique_by: %i[account_id external_id],
+      rows.map { |r| r.data.merge(tenant_id: context.tenant.id) },
+      unique_by: %i[tenant_id external_id],
       record_timestamps: true
     )
   end
@@ -181,14 +181,20 @@ Busbar.register_loader :employee, EmployeeLoader
 - `active_record:Employee` maps schema fields to model attributes with the same name, or through an `attribute_map` on the schema.
 - It always writes the tenant column itself, because `upsert_all` bypasses acts_as_tenant's default scope.
 - The unique index for `unique_by` must be (`tenant column` + natural key). The install check refuses a schema whose target table lacks that index.
-- It does not run model validations or callbacks. Schemas that need them should use a custom loader that calls `save` per row, at a known speed cost.
+- It does not run model validations, callbacks or Active Record encryption. The install check warns when a schema points it at a model that uses `encrypts`, `has_secure_password` or create callbacks.
+
+**Per-row save loader.** `Busbar::Loaders::ActiveRecordSave` (`loader :active_record_save, model: "User"`) is the first-class alternative: it finds each record by natural key through the model, assigns attributes and calls `save` inside `ActsAsTenant.with_tenant`, so validations, callbacks, `normalizes`, `has_secure_password` and encryption all run. A model validation error becomes a row error on the staged row, in the same shape as BusBar's validators (`{"field", "message", "validator": "model"}`), and the rest of the batch carries on. New records get a random password from `initial_password(record, row, context)`, which a host subclass overrides; `before_save(record, row, context)` covers anything else. It is the default loader of the shipped `user` schema.
+
+**Finding existing records.** Loaders find records through the host model, never by joining raw column values in SQL, so a natural key stored with deterministic encryption (locke's `email`) or `normalizes` matches the way the model would match it. `DiffJob`, the save loader, snapshot modes and the after-ingestion context all use `Loader#find_existing(keys, context)`. Lookup values go through the model's `normalizes` first.
+
+**Blank cells.** A blank cell never clears an existing value, and fields the template does not map are never written, so a column with a database default (locke's `time_zone`) keeps it.
 
 **Load modes** (per template, overridable per feed)
 
 | Mode | Rows in file | Records missing from file |
 |---|---|---|
 | `incremental` | Create or update | Untouched |
-| `snapshot_deactivate` | Create or update | Loader's `deactivate(keys)` is called, for example setting `status: inactive` |
+| `snapshot_deactivate` | Create or update | Loader's `deactivate(keys, context)` is called; there is no default, so the host decides what it means (a status, logging out sessions). No `status` column is assumed |
 | `snapshot_delete` | Create or update | Loader's `delete(keys)` is called; requires an explicit opt-in flag |
 | `create_only` | Create; existing keys skipped | Untouched |
 
@@ -260,7 +266,7 @@ The UI is server-rendered Hotwire: Turbo Frames for each panel, Turbo Streams fo
 
 **Large-file review.** The grid never loads all rows; it pages 100 rows at a time from `busbar_staged_rows`, defaulting to rows with errors. Fixing the same value in many rows uses a find-and-replace action that runs as a set-based update on staged rows.
 
-**Customizing.** Hosts override any view with `rails g busbar:views`, set a layout with `Busbar.layout`, and style with their own CSS; engine markup uses plain semantic classes prefixed `busbar-`. Authorization goes through a host-provided `Busbar.authorize` callable so the engine works with Pundit, CanCanCan or custom checks.
+**Customizing.** Hosts override any view with `rails g busbar:views`, set a layout with `Busbar.layout`, and style with their own CSS; engine markup uses plain semantic classes prefixed `busbar-`. Authorization goes through a host-provided `Busbar.authorize` callable so the engine works with Pundit, CanCanCan or custom checks. Until the host sets it, every action is denied. Actions are `index`, `show`, `create`, `map`, `review`, `approve` and `cancel`. Engine controllers inherit from `Busbar.config.parent_controller` (default `::ApplicationController`), so the host's authentication and tenant filters run first.
 
 **JSON API.** Every screen's action has a JSON equivalent under `/busbar/api/v1`, authenticated by the host, for hosts that build their own UI.
 
@@ -268,8 +274,8 @@ The UI is server-rendered Hotwire: Turbo Frames for each panel, Turbo Streams fo
 
 Tenancy is row-level through acts_as_tenant, and every path that runs outside a request sets the tenant explicitly.
 
-- `Busbar.tenant_class = "Account"` and `Busbar.tenant_column = :account_id` configure the host's tenant. Engine models call `acts_as_tenant :tenant, class_name: Busbar.tenant_class`.
-- `Busbar::ApplicationJob` serializes the tenant id and wraps `perform` in `ActsAsTenant.with_tenant`. A job enqueued without a tenant raises.
+- `Busbar.tenant_class = "Tenant"` and `Busbar.tenant_column = :tenant_id` configure the host's tenant; there is no default class, and the column defaults to `<tenant>_id`. Engine models call `acts_as_tenant :tenant, class_name: Busbar.tenant_class, foreign_key: :tenant_id`.
+- `Busbar::ApplicationJob` serializes the tenant id and wraps `perform` in `ActsAsTenant.with_tenant`. A job enqueued without a tenant raises. Jobs take run ids, not records, so nothing is queried before the tenant is set; this works with `ActsAsTenant.configure { |c| c.require_tenant = true }`, which locke uses.
 - Loaders receive `context.tenant` and must write it into every row; the generic loader does this, and the `unique_by` index must lead with the tenant column.
 - `busbar_schemas` with a null tenant are global; queries use `unscoped` only in the schema lookup that merges global and tenant schemas.
 - Each SFTP user and remote connection belongs to one tenant, and its landing prefix starts with the tenant id, so a misrouted file cannot cross tenants.
@@ -298,8 +304,8 @@ mount Busbar::Engine, at: "/busbar"
 
 # config/initializers/busbar.rb
 Busbar.configure do |c|
-  c.tenant_class   = "Account"
-  c.tenant_column  = :account_id
+  c.tenant_class   = "Tenant"
+  c.tenant_column  = :tenant_id
   c.current_user   = -> { Current.user }
   c.authorize      = ->(user, action, record) { BusbarPolicy.new(user, record).public_send("#{action}?") }
   c.layout         = "application"
@@ -342,7 +348,7 @@ end
 class UserIngestionHandler < Busbar::AfterIngestion
   def call(run, context)
     context.created.find_each do |row|          # streams staged rows, never all at once
-      UserMailer.invitation(row.record).deliver_later
+      UserMailer.with(user: row.record).invitation_instructions.deliver_later
     end
     context.deactivated_keys.each_slice(1_000) { |keys| SessionRevoker.call(keys) }
   end
@@ -355,7 +361,7 @@ end
 
 - `context` exposes `created`, `updated`, `unchanged` and `failed` as streamed scopes over staged rows, `deactivated_keys` for snapshot modes, `record` lookup by natural key, the template, the feed and the user who approved the load.
 - It runs in its own job after `Loading`, so a slow or failing handler never blocks or rolls back the load. A handler that raises is retried; after the final retry the run is flagged `after_ingestion_failed` and the ops address is notified.
-- Handlers can be re-run from the run detail page, so they should be idempotent; the context carries the run id to help with that.
+- Handlers can be re-run from the run detail page. `context.created.each` (and `updated`, `unchanged`, `failed`) yields only rows not yet handled and marks each row handled once the block returns, so a retried or re-run handler carries on where it stopped and sends no second invitation; `.all` gives the plain scope. A second run of the same file sees those users as `unchanged`, so they are not in `created` either.
 
 ## Extensions
 
@@ -442,19 +448,36 @@ Build in four phases, each shippable on its own, so a real client can load data 
 
 Bucket pull, email-in, HTTPS file push, JSON and NDJSON moved into version 1 (1 Nov).
 
-**Phase 1 target: client users.** With no host app chosen, phase 1 builds against the dummy app's `Account` and `User` models and ships a ready-made `user` schema hosts can adopt.
+**Phase 1 target: locke users.** The first host is [locke](https://github.com/robertoplancarte/locke), a multitenant OIDC and SAML identity provider (Rails 8.1, acts_as_tenant with `Tenant` and `tenant_id`, Postgres, Solid Queue, ActiveStorage). The dummy app mirrors its shapes so what passes here works there unchanged: `Tenant`, a `User` with `has_secure_password`, deterministic encryption on `email`, non-deterministic on `name` and `otp_secret`, create callbacks that fill `otp_secret`, `webauthn_id` and `public_id`, `normalizes` on email and name, and `require_tenant = true`.
 
-- Fields: `external_id`, `email`, `first_name`, `last_name`, `role`, `status`, `title`, `department`, `manager_email`, `phone`.
-- Natural key: `external_id` when the client has one, otherwise lowercased `email`; chosen per template.
-- `role` and `status` map through value maps, so "Admin", "administrator" and "ADM" land on the same role.
-- `manager_email` resolves to a user in the same file or already in the tenant, which exercises the `references` check.
-- Passwords are never imported. `snapshot_deactivate` suspends users missing from an HR feed instead of deleting them.
+The shipped `user` schema (`Busbar::Schemas.user`):
+
+- Fields: `external_id`, `email` (required), `name` (max 100), `time_zone`, and virtual `first_name` and `last_name`, which a schema transform joins into `name` when the file has no name.
+- `time_zone` accepts Rails and IANA names and stores the IANA name, which `ActiveSupport::TimeZone[...]` accepts.
+- Natural key candidates: `external_id`, then `email`; a template uses the first whose fields it maps, or names one. The email type lowercases and strips, matching locke's `normalizes`.
+- Loader: `active_record_save` on `User`. Passwords are never imported; a schema that declares a password field raises.
+- Roles, status, title, department, manager and phone are gone from the shipped schema because locke has none; a host adds them by redefining `user`.
+
+## Phase 1 as built (locke as first host)
+
+Decisions made on 3 Nov 2026 while building phase 1 against locke.
+
+- **Tenant.** Nothing assumes `Account`. `tenant_class` has no default; the generator writes `Tenant` and `tenant_id` unless told otherwise.
+- **Loaders.** Two built-in kinds: `active_record` (upsert_all, fast) and `active_record_save` (per row, model code runs). `Busbar.register_loader(schema_key, klass)` overrides either per schema. Loaders get `Loader::Row` structs (`id`, `row_number`, `key`, `data`, `action`) and return a `Loader::Outcome` per row.
+- **Install check.** `bin/rails busbar:check` lists, per schema: a missing tenant column, fields with no model attribute (locke has no `external_id`, so templates must not map it), a missing tenant-led unique index for upsert_all, and `encrypts`, `has_secure_password` or host-written create callbacks on a model behind the upsert loader.
+- **Schemas stay in Ruby in phase 1.** Templates and runs reference schemas by `schema_key`; `busbar_schemas` arrives with database-defined schemas in phase 3. Runs keep a `template_snapshot` instead of pinning a template row by version.
+- **Staging uses `insert_all`, not `COPY`,** and CSV parsing uses Ruby's `csv` with encoding detection (UTF-8, UTF-8 with BOM, UTF-16, else Windows-1252) and delimiter sniffing, not `smarter_csv`. JSON arrays are read whole; NDJSON, CSV and XLSX (via `roo`) stream. Benchmarks decide whether `COPY` and a SAX JSON parser are needed.
+- **Chunk coordination.** `chunks_done` is a progress counter; the job that moves a run to the next stage claims a timestamp column (`checks_enqueued_at`, `finalize_enqueued_at`) with a conditional update, so retries cannot enqueue a stage twice.
+- **References** are checked against the file and the tenant's existing records through the target schema's loader. The `lookup` transform is not built yet.
+- **Not in this phase 1 cut:** Turbo Stream live progress (the run page shows progress on refresh), the Stimulus controllers, inline cell edits, duplicate-file rejection (it needs feeds), and row-drop thresholds (phase 2 with feeds). Snapshot modes work for one-time imports because locke needs `snapshot_deactivate`.
+- **Phase 5 readiness.** `Schema#process(attributes)` runs transforms, casting and validation for one record with no file or run, and `Loaders::ActiveRecordSave#load_record(row, context)` saves one record by natural key. `Busbar.ingest_record(schema: :user, attributes:, tenant:)` is those two calls plus the after-ingestion handler. Natural keys are a list of candidates, so an IdP subject field (SAML NameID or OIDC `sub`) can be added next to `external_id` and matched on first SSO login without changing the loader API.
 
 **Open questions**
 
 - [x] Postgres is required (confirmed 1 Nov).
-- [x] First target: client users, built in the dummy app since no host app is chosen yet (confirmed 1 Nov).
+- [x] First target: client users, built in the dummy app since no host app is chosen yet (confirmed 1 Nov). First host is locke (3 Nov).
 - [x] Gem name: `busbar`, shown as BusBar, with the `Busbar` Ruby namespace (confirmed 1 Nov).
 - [ ] Open source the engine, or keep it private to our apps?
 - [ ] Should a one-time import with zero errors skip review and load straight away?
+- [ ] Locke has no admin role yet: who may import users there? BusBar denies everything until `authorize` is set.
 - [ ] Invitations and other side effects are left to the host through the after-ingestion service (confirmed 1 Nov).

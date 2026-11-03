@@ -1,3 +1,5 @@
+require "active_job/railtie"
+require "active_storage/engine"
 require "acts_as_tenant"
 require "statesman"
 require "turbo-rails"

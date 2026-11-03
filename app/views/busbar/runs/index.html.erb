@@ -1,0 +1,24 @@
+<section class="busbar busbar-runs">
+  <header class="busbar-header">
+    <h1>Imports</h1>
+    <%= link_to "New import", new_run_path, class: "busbar-button" %>
+  </header>
+  <table class="busbar-table">
+    <thead><tr><th>File</th><th>Records</th><th>State</th><th>Rows</th><th>Created</th><th>Updated</th><th>Errors</th><th>Started</th></tr></thead>
+    <tbody>
+      <% @runs.each do |run| %>
+        <tr>
+          <td><%= link_to run.filename, run_path(run) %></td>
+          <td><%= run.schema_key.humanize %></td>
+          <td><span class="busbar-state busbar-state--<%= run.state %>"><%= run.state.humanize %></span></td>
+          <td><%= run.row_count %></td>
+          <td><%= run.created_count %></td>
+          <td><%= run.updated_count %></td>
+          <td><%= run.invalid_count + run.failed_count %></td>
+          <td><%= l(run.created_at, format: :short) %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table>
+  <% if @runs.empty? %><p class="busbar-empty">No imports yet.</p><% end %>
+</section>

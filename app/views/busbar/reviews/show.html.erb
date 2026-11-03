@@ -1,0 +1,43 @@
+<section class="busbar busbar-review">
+  <h1>Review <%= @run.filename %></h1>
+  <% count = ->(status, action = nil) { @totals.sum { |(s, a), n| s == status && (action.nil? || a == action) ? n : 0 } } %>
+  <ul class="busbar-totals">
+    <li>To create: <strong><%= count.("valid", "create") %></strong></li>
+    <li>To update: <strong><%= count.("valid", "update") %></strong></li>
+    <li>Unchanged: <strong><%= count.("valid", "unchanged") %></strong></li>
+    <li>Skipped: <strong><%= count.("valid", "skip") %></strong></li>
+    <li>With errors (not imported): <strong><%= count.("invalid") %></strong></li>
+  </ul>
+
+  <nav class="busbar-filters">
+    <% %w[errors create update unchanged all].each do |filter| %>
+      <%= link_to filter.humanize, run_review_path(@run, filter: filter), class: ("busbar-current" if filter == @filter) %>
+    <% end %>
+  </nav>
+
+  <table class="busbar-table">
+    <thead><tr><th>Row</th><% @run.schema.field_names.each do |name| %><th><%= name.humanize %></th><% end %><th>Action</th><th>Errors</th></tr></thead>
+    <tbody>
+      <% @rows.each do |row| %>
+        <% bad = row.errors_list.map { |e| e["field"] } %>
+        <tr class="<%= "busbar-row--invalid" if row.status == "invalid" %>">
+          <td><%= row.row_number %></td>
+          <% @run.schema.field_names.each do |name| %>
+            <td class="<%= "busbar-cell--invalid" if bad.include?(name) %>"><%= row.data[name] %></td>
+          <% end %>
+          <td><%= row.action&.humanize %></td>
+          <td><%= row.errors_list.map { |e| "#{e["field"].humanize} #{e["message"]}" }.join("; ") %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table>
+  <p class="busbar-pages">
+    <% if @page > 1 %><%= link_to "Previous", run_review_path(@run, filter: @filter, page: @page - 1) %><% end %>
+    <% if @rows.size == Busbar::ReviewsController::PAGE_SIZE %><%= link_to "Next", run_review_path(@run, filter: @filter, page: @page + 1) %><% end %>
+  </p>
+
+  <% if @run.in_state?(:ready) %>
+    <%= button_to "Approve and import", run_review_path(@run), method: :patch, class: "busbar-button" %>
+    <%= button_to "Cancel import", cancel_run_path(@run), class: "busbar-button busbar-button--secondary" %>
+  <% end %>
+</section>
