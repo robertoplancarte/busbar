@@ -1,0 +1,6 @@
+Email,Full Name,Time Zone
+ana@acme.test,Ana Lima,Mars/Olympus
+not-an-email,No One,
+,Missing Email,
+ok@acme.test,Okay,UTC
+ok@acme.test,Okay Again,UTC

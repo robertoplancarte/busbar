@@ -1,3 +1,3 @@
 Rails.application.routes.draw do
-  mount Busbar::Engine => "/busbar"
+  mount Busbar::Engine, at: "/busbar"
 end

@@ -1,0 +1,38 @@
+<section class="busbar busbar-mapping">
+  <h1>Map columns from <%= @run.filename %></h1>
+  <% if @template.errors.any? %>
+    <ul class="busbar-error"><% @template.errors.full_messages.each do |m| %><li><%= m %></li><% end %></ul>
+  <% end %>
+  <%= form_with url: run_mapping_path(@run), method: :patch, class: "busbar-form" do |f| %>
+    <table class="busbar-table">
+      <thead><tr><th>Column in the file</th><th>Sample values</th><th>Field</th></tr></thead>
+      <tbody>
+        <% @run.headers.each do |header| %>
+          <tr>
+            <td><%= header %></td>
+            <td class="busbar-samples"><%= Array(@run.samples[header]).first(5).join(", ") %></td>
+            <td>
+              <%= select_tag "column_map[#{header}]",
+                    options_for_select(@run.schema.fields.values.map { |fld| [ "#{fld.label}#{" *" if fld.required}", fld.name ] }, @template.column_map.to_h[header]),
+                    include_blank: "Don't import", id: "busbar-map-#{header.parameterize}" %>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+    <p>
+      <%= f.label :natural_key, "Match existing records by" %>
+      <%= f.select :natural_key, @run.schema.natural_keys.map { |k| [ k.map(&:humanize).join(" + "), k.join("+") ] },
+            include_blank: "Automatic (first one the file has)" %>
+    </p>
+    <p>
+      <%= f.label :load_mode, "Records already here" %>
+      <%= f.select :load_mode, [ [ "Create new and update existing", "incremental" ], [ "Only create new", "create_only" ] ], selected: @run.load_mode %>
+    </p>
+    <p>
+      <%= f.label :template_name, "Save this mapping as" %>
+      <%= f.text_field :template_name, value: @template.name %>
+    </p>
+    <%= f.submit "Confirm mapping", class: "busbar-button" %>
+  <% end %>
+</section>

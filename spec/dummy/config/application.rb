@@ -38,6 +38,11 @@ module Dummy
     # config.time_zone = "Central Time (US & Canada)"
     # config.eager_load_paths << Rails.root.join("extras")
 
+    # Test-only keys, as locke sets in its test environment.
+    config.active_record.encryption.primary_key = "dummy-primary-key-not-for-production"
+    config.active_record.encryption.deterministic_key = "dummy-deterministic-key-not-for-production"
+    config.active_record.encryption.key_derivation_salt = "dummy-key-derivation-salt-not-for-production"
+
     # Don't generate system test files.
     config.generators.system_tests = nil
   end
